@@ -146,6 +146,7 @@ for part in "${partitions[@]}"; do
 done
 
 sgdisk --clear "${partargs[@]}" --sort --print "${OS_IMAGE}"
+ROOT_VOLUME_DISK_GUID="$(sgdisk --print "${OS_IMAGE}" | grep "Disk identifier" | awk '{print $4}')"
 
 # Partition the separate data disk, if we're using the split layout.
 if [[ "${PARTITION_PLAN}" == "split" ]]; then
@@ -419,6 +420,7 @@ menuentry "${PRETTY_NAME} ${VERSION_ID}" --unrestricted {
        ${KERNEL_PARAMETERS} \\
        ${BOOTCONFIG} \\
        root=/dev/dm-0 rootwait ro \\
+       dm-mod.waitfor=PARTLABEL=${ROOT_VOLUME_DISK_GUID} \\
        raid=noautodetect \\
        random.trust_cpu=on \\
        selinux=1 enforcing=1 \\

@@ -391,7 +391,7 @@ sbsetup_wrapup() {
   # Convert certificates from PEM format (ASCII) to DER (binary). This could be
   # done when the certificates are created, but the resulting binary files are
   # not as nice to store in source control.
-  for cert in PK KEK db vendor; do
+  for cert in PK KEK db vendor shim-sign code-sign; do
     openssl x509 \
       -inform PEM -in "${SBKEYS}/${cert}.crt" \
       -outform DER -out "${SBKEYS}/${cert}.cer"
@@ -486,16 +486,22 @@ undo_sign() {
 }
 
 do_sign() {
-  local what cert
+  local what certs
   local -n sign_key
   what="${1:?}"
-  cert="${2:?}"
-  sign_key="${3:?}"
+  sign_key="${2:?}"
+  certs=( "${@:3}" )
 
   pesign -i "${what}" -o "${what}.signed" -s "${sign_key[@]}"
   mv "${what}.signed" "${what}"
   pesign -i "${what}" -l
-  pesigcheck -i "${what}" -n 0 -c "${cert}"
+
+  declare -a certargs=()
+  for cert in "${certs[@]}"; do
+      certargs+=("-c" "${cert}")
+  done
+
+  pesigcheck -i "${what}" -n 0 ${certargs[@]}
 }
 
 sign_shim() {
@@ -509,7 +515,7 @@ sign_shim() {
   undo_sign "${shim}"
   "${ARCH:?}-objdumpcopy" "${shim}" \
     --update-section ".vendor_cert=${SBKEYS}/vendor.obj"
-  do_sign "${shim}" "${SBKEYS}/db.cer" SHIM_SIGN_KEY
+  do_sign "${shim}" SHIM_SIGN_KEY "${SBKEYS}/db.cer" "${SBKEYS}/shim-sign.cer"
 }
 
 zero_shim() {
@@ -530,7 +536,7 @@ sign_mokm() {
   mokm="${1:?}"
 
   undo_sign "${mokm}"
-  do_sign "${mokm}" "${SBKEYS}/vendor.cer" CODE_SIGN_KEY
+  do_sign "${mokm}" CODE_SIGN_KEY "${SBKEYS}/vendor.cer" "${SBKEYS}/code-sign.cer"
 }
 
 sign_grub() {
@@ -543,7 +549,7 @@ sign_grub() {
   "${ARCH:?}-objdumpcopy" "${grub}" \
     --file-alignment 4096 \
     --update-section ".pubkey=${SBKEYS}/config-sign.pubkey"
-  do_sign "${grub}" "${SBKEYS}/vendor.cer" CODE_SIGN_KEY
+  do_sign "${grub}" CODE_SIGN_KEY "${SBKEYS}/vendor.cer" "${SBKEYS}/code-sign.cer"
 }
 
 unembed_grub() {
@@ -567,7 +573,7 @@ sign_vmlinuz() {
   vmlinuz="${1:?}"
 
   undo_sign "${vmlinuz}"
-  do_sign "${vmlinuz}" "${SBKEYS}/vendor.cer" CODE_SIGN_KEY
+  do_sign "${vmlinuz}" CODE_SIGN_KEY "${SBKEYS}/vendor.cer" "${SBKEYS}/code-sign.cer"
 }
 
 generate_hmac() {

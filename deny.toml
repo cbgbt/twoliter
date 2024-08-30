@@ -93,6 +93,7 @@ skip-tree = [
 [sources]
 allow-git = [
     "https://github.com/bottlerocket-os/bottlerocket-test-system",
+    "https://github.com/haha-business/pentacle.git",
 ]
 # Deny crates from unknown registries or git repositories.
 unknown-registry = "deny"

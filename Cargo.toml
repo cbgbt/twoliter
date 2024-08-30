@@ -54,6 +54,8 @@ twoliter = { version = "0", path = "twoliter", artifact = [ "bin:twoliter" ] }
 unplug = { version = "0.1", path = "tools/unplug", artifact = [ "bin:unplug" ] }
 update-metadata = { version = "0.1", path = "tools/update-metadata" }
 
+pentacle = { version = "1.0.0", git = "https://github.com/haha-business/pentacle.git", rev = "e606ab25" }
+
 anyhow = "1"
 async-recursion = "1"
 async-stream = "0.3"
@@ -69,6 +71,7 @@ aws-sdk-sts = "1"
 aws-smithy-types = "1"
 aws-types = "1"
 base64 = "0.22"
+bincode = "1"
 bytes = "1"
 chrono = { version = "0.4", default-features = false }
 clap = "4"

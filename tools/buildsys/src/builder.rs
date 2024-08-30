@@ -17,6 +17,9 @@ use duct::cmd;
 use error::Result;
 use lazy_static::lazy_static;
 use nonzero_ext::nonzero;
+use pipesys::multi_server::{
+    FileBinding, MultiServer as PipesysMultiServer, MultiServerConf as PipesysMultiServerConf,
+};
 use pipesys::server::Server as PipesysServer;
 use rand::Rng;
 use regex::Regex;
@@ -571,6 +574,20 @@ impl DockerBuild {
             OutputCleanup::None => (),
         }
 
+        let tools_dir = std::env::var("TWOLITER_TOOLS_DIR").context(error::EnvironmentSnafu {
+            var: "TWOLITER_TOOLS_DIR".to_string(),
+        })?;
+        let tools_pipesys_config = create_tools_pipesys_server_config(&tools_dir)?;
+
+        // Pipesys is specially mounted into the bypass container to bootstrap the rest of the tools
+        let pipesys_source = tools_pipesys_config
+            .file_bindings()
+            .iter()
+            .find(|b| b.target_path() == PathBuf::from("pipesys"))
+            .context(error::PipesysMissingSnafu)?
+            .source_path()
+            .display();
+
         let mut build = format!(
             "build {context} \
             --target {target} \
@@ -578,7 +595,9 @@ impl DockerBuild {
             --network host \
             --file {dockerfile} \
             --no-cache-filter rpmbuild,kitbuild,repobuild,imgbuild,migrationbuild,kmodkitbuild,imgrepack \
+            -v {pipesys_source}:/usr/local/bin/pipesys:ro \
             --build-arg BYPASS_SOCKET={tag}-bypass \
+            --build-arg TOOLS_SOCKET={tag}-tools
             --build-arg BUILDER_UID={uid}",
             context = self.context.display(),
             dockerfile = self.dockerfile.display(),
@@ -602,7 +621,7 @@ impl DockerBuild {
             --pid host \
             -u {uid} \
             -v {root}:/bypass:ro \
-            -v {root}/build/tools/pipesys:/usr/local/bin/pipesys:ro \
+            -v {pipesys_source}:/usr/local/bin/pipesys:ro \
             {sdk} \
             pipesys serve --socket {tag}-bypass --client-uid {uid} --path /bypass",
             tag = self.tag,
@@ -628,6 +647,15 @@ impl DockerBuild {
         let output_dir = marker_dir.clone();
         runtime.spawn(async move {
             PipesysServer::for_path(output_socket, ROOT_UID, &output_dir)
+                .serve()
+                .await
+        });
+
+        // Spawn a background task that will serve the tools.
+        let tools_socket = format!("{}-tools", self.tag);
+        runtime.spawn(async move {
+            PipesysMultiServer::new(tools_socket, ROOT_UID, tools_pipesys_config)
+                .await?
                 .serve()
                 .await
         });
@@ -1035,4 +1063,45 @@ where
     fn split_string(&self) -> Vec<String> {
         self.as_ref().split(' ').map(String::from).collect()
     }
+}
+
+// =^..^=   =^..^=   =^..^=   =^..^=   =^..^=   =^..^=   =^..^=   =^..^=   =^..^=   =^..^=   =^..^=
+
+/// Creates a pipesys server configuration based on the tools directory.
+///
+/// Tool symlinks are resolved before adding them to the configuration.
+fn create_tools_pipesys_server_config<P: AsRef<Path>>(
+    tools_dir: P,
+) -> Result<PipesysMultiServerConf> {
+    let walker = WalkDir::new(&tools_dir)
+        .follow_links(false)
+        .same_file_system(false)
+        .min_depth(1)
+        .into_iter();
+
+    let symlinks = walker
+        .filter_entry(|e| e.file_type().is_symlink() || e.file_type().is_dir())
+        .flat_map(|e| e.context(error::DirectoryWalkSnafu))
+        .map(|e| e.into_path());
+
+    // Dereference links and compute their target path
+    let pipesys_link_bindings = symlinks
+        .filter(|link| link.is_symlink())
+        .map(|link| {
+            let target = link
+                .read_link()
+                .context(error::ReadSymlinkSnafu { path: link.clone() })?;
+
+            let relative_path =
+                link.strip_prefix(&tools_dir)
+                    .context(error::CreateToolReferenceSnafu {
+                        tool_path: link.clone(),
+                        tools_dir: tools_dir.as_ref().to_path_buf(),
+                    })?;
+
+            Ok(FileBinding::new(target, relative_path.to_path_buf()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(PipesysMultiServerConf::new(pipesys_link_bindings))
 }

@@ -1,7 +1,7 @@
 use crate::cargo_make::CargoMake;
 use crate::lock::Lock;
 use crate::project;
-use crate::tools::install_tools;
+use crate::tools::Tools;
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
@@ -38,8 +38,11 @@ impl PublishKit {
     pub(super) async fn run(&self) -> Result<()> {
         let project = project::load_or_find_project(self.project_path.clone()).await?;
         let lock = Lock::load(&project).await?;
-        let toolsdir = project.project_dir().join("build/tools");
-        install_tools(&toolsdir).await?;
+
+        let tools_tempdir = tempfile::TempDir::new().unwrap();
+        let toolsdir = tools_tempdir.path();
+        let _tools = Tools::install().await?.with_symlinks(&toolsdir).await?;
+
         let makefile_path = toolsdir.join("Makefile.toml");
 
         CargoMake::new(&lock.sdk.source)?

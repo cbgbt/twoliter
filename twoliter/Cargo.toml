@@ -23,6 +23,7 @@ futures.workspace = true
 log.workspace = true
 oci-cli-wrapper.workspace = true
 olpc-cjson.workspace = true
+pentacle.workspace = true
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

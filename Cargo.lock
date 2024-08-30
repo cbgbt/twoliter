@@ -676,6 +676,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2287,6 +2296,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pentacle"
+version = "1.0.0"
+source = "git+https://github.com/haha-business/pentacle.git?rev=e606ab25#e606ab250e6655865bb93a6d98157093f2eb455f"
+dependencies = [
+ "libc",
+ "log",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2395,6 +2413,7 @@ name = "pipesys"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode",
  "clap",
  "daemonize",
  "env_logger",
@@ -2402,6 +2421,8 @@ dependencies = [
  "inotify",
  "log",
  "nix",
+ "serde",
+ "serde_json",
  "tokio",
  "uds",
 ]
@@ -3827,6 +3848,7 @@ dependencies = [
  "log",
  "oci-cli-wrapper",
  "olpc-cjson",
+ "pentacle",
  "pipesys",
  "pubsys",
  "pubsys-setup",

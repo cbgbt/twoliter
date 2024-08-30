@@ -1,4 +1,4 @@
-use crate::tools::install_tools;
+use crate::tools::Tools;
 use anyhow::Result;
 use clap::Parser;
 use std::env;
@@ -48,7 +48,7 @@ impl CheckToolArgs {
             .install_dir
             .clone()
             .unwrap_or_else(|| env::temp_dir().join(unique_name()));
-        install_tools(&dir).await?;
+        let _tools = Tools::install().await?.with_symlinks(&dir).await?;
         println!("{}", dir.display());
         Ok(())
     }

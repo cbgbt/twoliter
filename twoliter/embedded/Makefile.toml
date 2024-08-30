@@ -785,6 +785,7 @@ if [ -z "${PACKAGE}" ]; then
 fi
 
 export PATH="${TWOLITER_TOOLS_DIR}:${PATH}"
+ls "${TWOLITER_TOOLS_DIR}"
 
 # Relocate an existing target directory to the new location, to avoid breaking
 # compatibility on upgrade. On downgrade, the missing directory will trigger a
@@ -835,6 +836,7 @@ export PATH="${TWOLITER_TOOLS_DIR}:${PATH}"
 # because we build host tools with cargo as well, like buildsys and pubsys.
 export CARGO_TARGET_DIR=${BUILDSYS_ROOT_DIR}/target/${BUILDSYS_ARCH}
 
+echo "cargo-make tools dir: ${TWOLITER_TOOLS_DIR}"
 cargo build \
   ${CARGO_BUILD_ARGS} \
   ${CARGO_MAKE_CARGO_ARGS} \

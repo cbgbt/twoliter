@@ -83,6 +83,22 @@ pub(crate) enum Error {
         prefix: PathBuf,
         source: std::path::StripPrefixError,
     },
+
+    #[snafu(display("Failed to read symlink from path '{}': {source}", path.display()))]
+    ReadSymlink {
+        source: std::io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Failed to create pipesys tool reference for '{}' from tools dir '{}': {source}", tool_path.display(), tools_dir.display()))]
+    CreateToolReference {
+        source: std::path::StripPrefixError,
+        tool_path: PathBuf,
+        tools_dir: PathBuf,
+    },
+
+    #[snafu(display("Could not find `pipesys` utility in tools directory."))]
+    PipesysMissing,
 }
 
 pub(super) type Result<T> = std::result::Result<T, Error>;

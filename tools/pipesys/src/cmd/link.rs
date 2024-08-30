@@ -115,7 +115,7 @@ impl Link {
 
 /// Choose a plausible parent directory. For an absolute path, the parent should be available. For
 /// a relative path, assume the current process directory is intended.
-fn parent_dir(path: &Path) -> Result<PathBuf> {
+pub(crate) fn parent_dir(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         if let Some(parent) = path.parent() {
             return Ok(parent.to_path_buf());
@@ -127,14 +127,14 @@ fn parent_dir(path: &Path) -> Result<PathBuf> {
 }
 
 /// Helper function to create stdout and stderr streams with the same file storage.
-async fn output_streams(path: &Path) -> Result<(std::fs::File, std::fs::File)> {
+pub(crate) async fn output_streams(path: &Path) -> Result<(std::fs::File, std::fs::File)> {
     let stdout = fs::File::create(path).await?;
     let stderr = stdout.try_clone().await?;
     Ok((stdout.into_std().await, stderr.into_std().await))
 }
 
 /// Returns true if a symlink exists at the path, and false otherwise.
-async fn symlink_found(path: &Path) -> bool {
+pub(crate) async fn symlink_found(path: &Path) -> bool {
     let res = fs::symlink_metadata(path)
         .await
         .with_context(|| format!("failed to query metadata for {}", path.display()));
@@ -156,7 +156,7 @@ async fn symlink_not_found(path: &Path) -> bool {
 }
 
 /// Initialize an inotify instance with the requested watch mask.
-fn inotify_init(path: &Path, watch_mask: WatchMask) -> Result<Inotify> {
+pub(crate) fn inotify_init(path: &Path, watch_mask: WatchMask) -> Result<Inotify> {
     let parent_dir = parent_dir(path)?;
 
     let inotify = Inotify::init().with_context(|| "failed to initialize inotify")?;
@@ -169,7 +169,7 @@ fn inotify_init(path: &Path, watch_mask: WatchMask) -> Result<Inotify> {
 }
 
 /// Wait for inotify events until the provided function returns true.
-async fn inotify_wait<'a, F>(
+pub(crate) async fn inotify_wait<'a, F>(
     watcher: Inotify,
     path: &'a Path,
     check: &dyn Fn(&'a Path) -> F,

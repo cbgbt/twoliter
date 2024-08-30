@@ -1,19 +1,27 @@
 #[cfg_attr(target_os = "linux", path = "link.rs")]
 #[cfg_attr(not(target_os = "linux"), path = "non_linux_link.rs")]
-mod link;
+pub(crate) mod link;
+
+#[cfg_attr(target_os = "linux", path = "multi_link.rs")]
+#[cfg_attr(not(target_os = "linux"), path = "non_linux_multi_link.rs")]
+mod multi_link;
 
 use self::link::Link;
+use self::multi_link::MultiLink;
+use pipesys::multi_server::MultiServerArgs as MultiServe;
 use pipesys::server::Server as Serve;
 
 use anyhow::Result;
 #[cfg(target_os = "linux")]
-use anyhow::{ensure, Context};
+use anyhow::{anyhow, bail, ensure, Context};
 use clap::Parser;
 #[cfg(target_os = "linux")]
 use log::debug;
 use log::LevelFilter;
 #[cfg(target_os = "linux")]
 use nix::fcntl::{fcntl, F_DUPFD};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 const DEFAULT_LEVEL_FILTER: LevelFilter = LevelFilter::Info;
 
@@ -38,6 +46,9 @@ pub(crate) enum Subcommand {
 
     /// Link a directory file descriptor to the target path.
     Link(Link),
+
+    MultiServe(MultiServe),
+    MultiLink(MultiLink),
 }
 
 /// Entrypoint for the `pipesys` command line program.
@@ -45,6 +56,8 @@ pub(super) async fn run(args: Args) -> Result<()> {
     match args.subcommand {
         Subcommand::Serve(serve_args) => serve_args.serve().await,
         Subcommand::Link(link_args) => link_args.execute().await,
+        Subcommand::MultiServe(multi_serve_args) => multi_serve_args.serve().await,
+        Subcommand::MultiLink(multi_serve_args) => multi_serve_args.execute().await,
     }
 }
 
@@ -107,10 +120,80 @@ fn fetch_fd(socket: &str) -> Result<i32> {
     Ok(dupfd)
 }
 
+/// Helper function to retrieve a usize from a unix socket.
+#[cfg(target_os = "linux")]
+fn fetch_usize(
+    socket: &str,
+    socket_client: &uds::UnixSeqpacketConn,
+    field_name: &str,
+) -> Result<usize> {
+    let mut usize_buff = [0u8; std::mem::size_of::<usize>()];
+    if usize_buff.len()
+        != socket_client
+            .recv(&mut usize_buff)
+            .with_context(|| format!("failed to receive '{}' from socket {}", field_name, socket))?
+    {
+        bail!("socket sent invalid '{field_name}' {usize_buff:?}");
+    }
+    Ok(usize::from_ne_bytes(usize_buff))
+}
+
+/// Helper function to retrieve a file descriptor via an abstract socket.
+#[cfg(target_os = "linux")]
+fn fetch_fds(socket: &str) -> Result<Vec<(PathBuf, i32)>> {
+    let addr = uds::UnixSocketAddr::from_abstract(socket.as_bytes())
+        .with_context(|| format!("failed to create socket {}", socket))?;
+    let client = uds::UnixSeqpacketConn::connect_unix_addr(&addr)
+        .with_context(|| format!("failed to connect to socket {}", socket))?;
+
+    let targets_message_len = fetch_usize(socket, &client, "targets message length")?;
+    let num_fds = fetch_usize(socket, &client, "number of file descriptors")?;
+
+    let mut fd_buf = vec![-1; num_fds];
+    let mut targets_message_buf = vec![0u8; targets_message_len];
+
+    let (bytes, truncated, fds) = client
+        .recv_fds(&mut targets_message_buf, &mut fd_buf)
+        .with_context(|| format!("failed to receive file descriptor from socket {socket}"))?;
+
+    ensure!(
+        fds == num_fds,
+        format!("received {fds} file descriptors, expected {num_fds}")
+    );
+    ensure!(
+        bytes == targets_message_len,
+        format!("received {bytes} bytes for targets, expected {targets_message_len}")
+    );
+    ensure!(
+        !truncated,
+        format!(
+            "expected {targets_message_len} bytes for targets, but more received on socket {socket}"
+        )
+    );
+
+    let targets: Vec<PathBuf> = bincode::deserialize(&targets_message_buf)
+        .with_context(|| format!("failed to deserialize targets from socket {socket}"))?;
+
+    let fds: Vec<i32> = fd_buf
+        .into_iter()
+        .map(|fd| {
+            (fd > MIN_FD)
+                .then_some(fd)
+                .ok_or_else(|| {
+                    anyhow!("received invalid file descriptor {fd} from socket {socket}")
+                })
+                .and_then(duplicate_fd)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(targets.into_iter().zip(fds.into_iter()).collect())
+}
+
 /// Duplicate file descriptors without the CLOEXEC flag set.
 #[cfg(target_os = "linux")]
 fn duplicate_fd(fd: i32) -> Result<i32> {
     let newfd = fcntl(fd, F_DUPFD(MIN_FD))
         .with_context(|| format!("failed to duplicate file descriptor {fd}"))?;
+    debug!("duplicated file descriptor {fd} to {newfd}");
     Ok(newfd)
 }

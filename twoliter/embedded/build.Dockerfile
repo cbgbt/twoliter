@@ -61,7 +61,7 @@ RUN \
 USER root
 ARG BYPASS_SOCKET
 RUN --mount=target=/host \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
     find /bypass/build/rpms/ -mindepth 1 -maxdepth 1 -name '*.rpm' -size +0c -print -exec \
       ln -snft ./rpmbuild/RPMS {} \+ && \
     for pkg in ${PACKAGE_DEPENDENCIES} ; do \
@@ -108,6 +108,7 @@ RUN --mount=target=/host \
 ENV PATH="/usr/${ARCH}-bottlerocket-linux-gnu/debuginfo/bin:${PATH}"
 
 USER builder
+ARG TOOLS_SOCKET
 RUN --mount=source=.cargo,target=/home/builder/.cargo \
     --mount=type=cache,target=/home/builder/.cache,from=cache,source=/cache \
     --mount=source=sources,target=/home/builder/rpmbuild/BUILD/sources \
@@ -116,19 +117,21 @@ RUN --mount=source=.cargo,target=/home/builder/.cargo \
     # in the form <timestamp of latest commit>.<latest commit short sha>.br1
     # Remove '-dirty' from the commit sha: '-' is an illegal character for the Release field
     # and '-dirty' may not be accurate to the state of the actual package being built.
-    /host/build/tools/unplug \
+    /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker && \
+    /tools/unplug \
       rpmbuild -bb --clean \
         --undefine _auto_set_build_flags \
         --define "_target_cpu ${ARCH}" \
         --define "dist .${BUILD_ID_TIMESTAMP}.${BUILD_ID//-dirty/}.br1" \
-        rpmbuild/SPECS/${PACKAGE}.spec
+        rpmbuild/SPECS/${PACKAGE}.spec && \
+    rm /tools-marker
 
 # Copies RPM packages to the output directory that buildsys expects.
 USER root
 ARG BUILDER_UID
 ARG OUTPUT_SOCKET
 RUN --mount=target=/host \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
     rm -rf /output/* && \
     cp /home/builder/rpmbuild/RPMS/*/*.rpm /output/ && \
     chown -R "${BUILDER_UID}:${BUILDER_UID}" /output/ && \
@@ -161,6 +164,7 @@ ARG EXTERNAL_KIT_METADATA
 ARG VENDOR
 ARG LOCAL_KIT_DEPENDENCIES
 ARG BYPASS_SOCKET
+ARG TOOLS_SOCKET
 ARG OUTPUT_SOCKET
 ARG BUILDER_UID
 
@@ -168,10 +172,11 @@ WORKDIR /home/builder
 USER root
 
 RUN --mount=target=/host \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
     rm -rf /output/* && \
-    /host/build/tools/rpm2kit \
+    /tools/rpm2kit \
         --packages-dir=/bypass/build/rpms \
         --arch="${ARCH}" \
         "${PACKAGE_DEPENDENCIES[@]/#/--package=}" \
@@ -179,6 +184,7 @@ RUN --mount=target=/host \
     chown -R "${BUILDER_UID}:${BUILDER_UID}" /output/ && \
     rm /output && \
     rm /bypass && \
+    rm /tools-marker &&
     touch /tmp/.${NOCACHE}
 
 # =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^=
@@ -241,28 +247,31 @@ ARG KIT_DEPENDENCIES
 ARG EXTERNAL_KIT_DEPENDENCIES
 ARG ARCH
 ARG NOCACHE
+ARG TOOLS_SOCKET
 
 WORKDIR /home/builder
 USER builder
 
 # Build the metadata RPM for the variant.
 RUN --mount=target=/host \
-   cat "/usr/lib/rpm/platform/${ARCH}-bottlerocket/macros" generated.rpmmacros > .rpmmacros \
-   && cat generated.bconds /host/build/tools/metadata.spec >> rpmbuild/SPECS/metadata.spec \
+   /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker \
+   && cat "/usr/lib/rpm/platform/${ARCH}-bottlerocket/macros" generated.rpmmacros > .rpmmacros \
+   && cat generated.bconds /tools/metadata.spec >> rpmbuild/SPECS/metadata.spec \
    && rpmbuild -ba --clean \
       --undefine _auto_set_build_flags \
       --define "_target_cpu ${ARCH}" \
       rpmbuild/SPECS/metadata.spec \
    && rpm -qp --provides rpmbuild/RPMS/${ARCH}/bottlerocket-metadata-*.${ARCH}.rpm \
-   && echo ${NOCACHE}
+   && echo ${NOCACHE} \
+   && rm /tools-marker
 
 WORKDIR /root
 USER root
 ARG BYPASS_SOCKET
 ARG OUTPUT_SOCKET
 RUN --mount=target=/host \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
     rm -rf /output/* && \
     mkdir -p ./rpmbuild/RPMS && \
     find /bypass/build/rpms/ -mindepth 1 -maxdepth 1 -name "*.${ARCH}.rpm" -size +0c -print -exec \
@@ -317,6 +326,7 @@ ARG VERSION_ID
 ARG BUILD_ID
 ARG NOCACHE
 ARG BYPASS_SOCKET
+ARG TOOLS_SOCKET
 ARG OUTPUT_SOCKET
 ARG BUILDER_UID
 ARG VARIANT
@@ -355,9 +365,10 @@ RUN --mount=target=/host \
     --mount=type=secret,id=aws-access-key-id.env,target=/root/.aws/aws-access-key-id.env \
     --mount=type=secret,id=aws-secret-access-key.env,target=/root/.aws/aws-secret-access-key.env \
     --mount=type=secret,id=aws-session-token.env,target=/root/.aws/aws-session-token.env \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
-    /host/build/tools/rpm2img \
+    /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /tools/rpm2img \
       --package-dir=/local/rpms \
       --output-dir=/output \
       --external-kits-path="/bypass/build/external-kits" \
@@ -376,6 +387,7 @@ RUN --mount=target=/host \
     chown -R "${BUILDER_UID}:${BUILDER_UID}" /output/ && \
     rm /output && \
     rm /bypass && \
+    rm /tools-marker && \
     touch /tmp/.${NOCACHE}
 
 # =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^=
@@ -387,6 +399,7 @@ ARG BUILD_ID
 ARG NOCACHE
 ARG VARIANT
 ARG BYPASS_SOCKET
+ARG TOOLS_SOCKET
 ARG OUTPUT_SOCKET
 ARG BUILDER_UID
 ENV VARIANT=${VARIANT} VERSION_ID=${VERSION_ID} BUILD_ID=${BUILD_ID}
@@ -394,20 +407,22 @@ WORKDIR /root
 
 USER root
 RUN --mount=target=/host \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
     mkdir -p /local/migrations && \
     find /bypass/build/rpms/ -maxdepth 2 -type f \
         -name "bottlerocket-migrations-*.rpm" \
         -not -iname '*debuginfo*' \
         -exec cp '{}' '/local/migrations/' ';' && \
-    /host/build/tools/rpm2migrations \
+    /tools/rpm2migrations \
         --package-dir=/local/migrations \
         --output-dir=/output && \
     chown -R "${BUILDER_UID}:${BUILDER_UID}" /output && \
     rm -rf /local/migrations && \
     rm /output && \
     rm /bypass && \
+    rm /tools-marker && \
     touch /tmp/.${NOCACHE}
 
 # =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^=
@@ -422,6 +437,7 @@ ARG NOCACHE
 ARG VARIANT
 ENV VARIANT=${VARIANT} VERSION_ID=${VERSION_ID} BUILD_ID=${BUILD_ID}
 ARG BYPASS_SOCKET
+ARG TOOLS_SOCKET
 ARG OUTPUT_SOCKET
 ARG BUILDER_UID
 
@@ -429,14 +445,15 @@ USER root
 
 WORKDIR /tmp
 RUN --mount=target=/host \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
     mkdir -p /local/archives && \
     KERNEL="$(printf "%s\n" ${PACKAGES} | awk '/^kernel-/{print $1}')" && \
     find /bypass/build/ -type f \
         -name "bottlerocket-${KERNEL}-archive-*.${ARCH}.rpm" \
         -exec cp '{}' '/local/archives/' ';' && \
-    /host/build/tools/rpm2kmodkit \
+    /tools/rpm2kmodkit \
         --archive-dir=/local/archives \
         --toolchain-dir=/toolchain \
         --output-dir=/output && \
@@ -444,6 +461,7 @@ RUN --mount=target=/host \
     rm -rf /local/archives && \
     rm /output && \
     rm /bypass && \
+    rm /tools-marker && \
     touch /tmp/.${NOCACHE}
 
 # =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^=
@@ -462,6 +480,7 @@ ARG VERSION_ID
 ARG BUILD_ID
 ARG NOCACHE
 ARG BYPASS_SOCKET
+ARG TOOLS_SOCKET
 ARG OUTPUT_SOCKET
 ARG BUILDER_UID
 ARG VARIANT
@@ -494,10 +513,11 @@ RUN --mount=target=/host \
     --mount=type=secret,id=aws-access-key-id.env,target=/root/.aws/aws-access-key-id.env \
     --mount=type=secret,id=aws-secret-access-key.env,target=/root/.aws/aws-secret-access-key.env \
     --mount=type=secret,id=aws-session-token.env,target=/root/.aws/aws-session-token.env \
-    /host/build/tools/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
-    /host/build/tools/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
+    /usr/local/bin/pipesys multi-link --fd-socket "${TOOLS_SOCKET}" --parent /tools --marker /tools-marker && \
+    /usr/local/bin/pipesys link --fd-socket "${BYPASS_SOCKET}" --target /bypass && \
+    /usr/local/bin/pipesys link --fd-socket "${OUTPUT_SOCKET}" --target /output && \
     rm -rf /output/* && \
-    /host/build/tools/img2img \
+    /tools/img2img \
       --input-dir="/bypass/build/images/${ARCH}-${VARIANT}/${VERSION_ID}-${BUILD_ID}" \
       --output-dir=/output \
       --output-fmt="${IMAGE_FORMAT}" \
@@ -512,6 +532,7 @@ RUN --mount=target=/host \
     chown -R "${BUILDER_UID}:${BUILDER_UID}" /output/ && \
     rm /output && \
     rm /bypass && \
+    rm /tools-marker && \
     touch /tmp/.${NOCACHE}
 
 # =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^=

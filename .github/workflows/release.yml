@@ -150,6 +150,10 @@ jobs:
           cat uploads.txt
           gh release upload "${GITHUB_REF_NAME}" $(cat uploads.txt)
           echo "uploaded!"
+      - name: Upload attributions
+        run: |
+            make attributions
+            gh release upload "${GITHUB_REF_NAME}" twoliter-attributions.tar.gz
 
   # Mark the Github Release™ as a non-draft now that everything has succeeded!
   publish-release:

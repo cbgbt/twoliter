@@ -47,11 +47,9 @@ on:
 jobs:
   # Create the Github Release™ so the packages have something to be uploaded to
   create-release:
-    if: github.repository == 'bottlerocket-os/twoliter'
+    if: github.repository == 'cbgbt/twoliter'
     environment: release
-    runs-on:
-      group: bottlerocket
-      labels: bottlerocket_ubuntu-latest_16-core
+    runs-on: ubuntu-latest
     outputs:
       has-releases: ${{ steps.create-release.outputs.has-releases }}
     env:
@@ -97,7 +95,7 @@ jobs:
     needs: create-release
     if: >-
       ${{ needs.create-release.outputs.has-releases == 'true'
-          && github.repository == 'bottlerocket-os/twoliter'
+          && github.repository == 'cbgbt/twoliter'
       }}
     strategy:
       fail-fast: false
@@ -114,9 +112,7 @@ jobs:
               cargo install --locked \
                 --git "https://github.com/webern/cargo-dist" \
                 --rev "3dcbe823db0c4068f38db790d996a4af54e68b3e"
-    runs-on:
-      group: bottlerocket
-      labels: bottlerocket_ubuntu-latest_16-core
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MATRIX_DIST_ARGS: ${{ matrix.dist-args }}
@@ -158,11 +154,9 @@ jobs:
     needs: [create-release, upload-artifacts]
     if: >-
       ${{ needs.create-release.outputs.has-releases == 'true'
-          && github.repository == 'bottlerocket-os/twoliter'
+          && github.repository == 'cbgbt/twoliter'
       }}
-    runs-on:
-      group: bottlerocket
-      labels: bottlerocket_ubuntu-latest_8-core
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_REF_NAME: ${{ github.ref_name }}
@@ -184,15 +178,13 @@ jobs:
     # Only run after all the other tasks, but it's ok if upload-artifacts was skipped
     needs: [create-release, upload-artifacts, upload-attributions]
     if: >-
-      ${{ github.repository == 'bottlerocket-os/twoliter'
+      ${{ github.repository == 'cbgbt/twoliter'
           && always()
           && needs.create-release.result == 'success'
           && (needs.upload-artifacts.result == 'skipped'
             || needs.upload-artifacts.result == 'success')
       }}
-    runs-on:
-      group: bottlerocket
-      labels: bottlerocket_ubuntu-latest_8-core
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_REF_NAME: ${{ github.ref_name }}

@@ -10,7 +10,7 @@ publish = false
 anyhow.workspace = true
 flate2.workspace = true
 lazy_static.workspace = true
-tempfile.workspace = true
+pentacle.workspace = true
 
 [build-dependencies]
 flate2.workspace = true

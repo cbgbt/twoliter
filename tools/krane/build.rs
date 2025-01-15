@@ -63,6 +63,7 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=krane");
+    println!("cargo:rustc-link-lib=resolv");
 }
 
 fn ensure_required_tools_installed() {

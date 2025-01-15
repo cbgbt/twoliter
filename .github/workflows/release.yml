@@ -104,12 +104,12 @@ jobs:
       matrix:
         # For these target platforms
         include:
-          - dist-args: "--artifacts=local --target=x86_64-unknown-linux-musl"
+          - dist-args: "--artifacts=local --target=x86_64-unknown-linux-gnu"
             install-dist: |
               cargo install --locked \
                 --git "https://github.com/webern/cargo-dist" \
                 --rev "3dcbe823db0c4068f38db790d996a4af54e68b3e"
-          - dist-args: "--artifacts=local --target=aarch64-unknown-linux-musl"
+          - dist-args: "--artifacts=local --target=aarch64-unknown-linux-gnu"
             install-dist: |
               cargo install --locked \
                 --git "https://github.com/webern/cargo-dist" \

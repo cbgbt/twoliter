@@ -49,6 +49,10 @@ fn main() {
     if let Some(cross_cc) = env::var_os(&cross_cc_var) {
         build_command.env("CC", cross_cc);
     }
+    let cross_ar_var = format!("AR_{}", env::var("TARGET").unwrap().replace("-", "_"));
+    if let Some(cross_ar) = env::var_os(&cross_ar_var) {
+        build_command.env("AR", cross_ar);
+    }
 
     let exit_status = build_command.status().expect("Failed to build crane");
 

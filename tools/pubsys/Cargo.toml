@@ -7,6 +7,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+amispec.workspace = true
 async-stream.workspace = true
 aws-config.workspace = true
 aws-credential-types.workspace = true
@@ -17,6 +18,7 @@ aws-sdk-ssm.workspace = true
 aws-sdk-sts.workspace = true
 aws-smithy-types.workspace = true
 aws-types.workspace = true
+bounded-integer = { workspace = true, features = ["types"] }
 buildsys.workspace = true
 bytes.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }

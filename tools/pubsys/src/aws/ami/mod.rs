@@ -2,6 +2,7 @@
 //! EC2 AMIs.
 
 pub(crate) mod launch_permissions;
+mod merge_toml;
 pub(crate) mod public;
 mod register;
 mod snapshot;
@@ -10,12 +11,12 @@ pub(crate) mod wait;
 use crate::aws::ami::launch_permissions::get_launch_permissions;
 use crate::aws::ami::public::ami_is_public;
 use crate::aws::publish_ami::{get_snapshots, modify_image, modify_snapshots, ModifyOptions};
-use crate::aws::{client::build_client_config, parse_arch, region_from_string};
+use crate::aws::{client::build_client_config, region_from_string};
 use crate::Args;
 use aws_sdk_ebs::Client as EbsClient;
 use aws_sdk_ec2::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_ec2::operation::copy_image::{CopyImageError, CopyImageOutput};
-use aws_sdk_ec2::types::{ArchitectureValues, OperationType};
+use aws_sdk_ec2::types::OperationType;
 use aws_sdk_ec2::{config::Region, Client as Ec2Client};
 use aws_sdk_sts::operation::get_caller_identity::{
     GetCallerIdentityError, GetCallerIdentityOutput,
@@ -51,12 +52,12 @@ pub(crate) struct AmiArgs {
     variant_manifest: PathBuf,
 
     /// Path to the UEFI data
-    #[arg(short = 'e', long)]
-    uefi_data: PathBuf,
+    #[arg(short = 'e', long, value_parser = parse_uefi_data)]
+    uefi_data: String,
 
     /// The architecture of the machine image
-    #[arg(short = 'a', long, value_parser = parse_arch)]
-    arch: ArchitectureValues,
+    #[arg(short = 'a', long)]
+    arch: String,
 
     /// The desired AMI name
     #[arg(short = 'n', long)]
@@ -73,6 +74,10 @@ pub(crate) struct AmiArgs {
     /// Regions where you want the AMI, the first will be used as the base for copying
     #[arg(long, value_delimiter = ',')]
     regions: Vec<String>,
+
+    /// amispec file containing AMI registration options.
+    #[arg(long, value_parser = parse_toml_file)]
+    amispec_file: Option<toml::Table>,
 
     /// If specified, save created regional AMI IDs in JSON at this path.
     #[arg(long)]
@@ -143,7 +148,7 @@ async fn _run(args: &Args, ami_args: &AmiArgs) -> Result<HashMap<String, Image>>
     .await
     .context(error::GetAmiIdSnafu {
         name: &ami_args.name,
-        arch: ami_args.arch.as_ref(),
+        arch: &ami_args.arch,
         region: base_region.as_ref(),
     })?;
 
@@ -188,7 +193,7 @@ async fn _run(args: &Args, ami_args: &AmiArgs) -> Result<HashMap<String, Image>>
             .await
             .context(error::RegisterImageSnafu {
                 name: &ami_args.name,
-                arch: ami_args.arch.as_ref(),
+                arch: &ami_args.arch,
                 region: base_region.as_ref(),
             })?;
         info!(
@@ -317,7 +322,7 @@ async fn _run(args: &Args, ami_args: &AmiArgs) -> Result<HashMap<String, Image>>
     for (region, get_response) in get_responses {
         let get_response = get_response.context(error::GetAmiIdSnafu {
             name: &ami_args.name,
-            arch: ami_args.arch.as_ref(),
+            arch: &ami_args.arch,
             region: region.as_ref(),
         })?;
         if let Some(id) = get_response {
@@ -497,6 +502,17 @@ async fn get_account_ids(
     Ok(grant_accounts)
 }
 
+/// Parses the given string as an architecture, mapping values to the ones used in EC2.
+pub(crate) fn parse_toml_file(filepath: &str) -> Result<toml::Table> {
+    let amispec_toml =
+        std::fs::read_to_string(filepath).context(error::ReadFileSnafu { filepath })?;
+    toml::from_str(&amispec_toml).context(error::ParseAmiSpecSnafu { filepath })
+}
+
+pub(crate) fn parse_uefi_data(filepath: &str) -> Result<String> {
+    std::fs::read_to_string(filepath).context(error::ReadFileSnafu { filepath })
+}
+
 mod error {
     use crate::aws::{ami, publish_ami};
     use aws_sdk_ec2::error::SdkError;
@@ -587,6 +603,18 @@ mod error {
         MissingInResponse {
             request_type: String,
             missing: String,
+        },
+
+        #[snafu(display("Failed to parse AMI spec {} as toml: {}", filepath.display(), source))]
+        ParseAmiSpec {
+            filepath: PathBuf,
+            source: toml::de::Error,
+        },
+
+        #[snafu(display("Failed to read file {}: {}", filepath.display(), source))]
+        ReadFile {
+            filepath: PathBuf,
+            source: std::io::Error,
         },
 
         #[snafu(display("Error registering {} {} in {}: {}", arch, name, region, source))]

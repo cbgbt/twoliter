@@ -1,23 +1,75 @@
+use super::merge_toml::Merge;
 use super::{snapshot::snapshot_from_image, AmiArgs};
+use amispec::ebs::EbsBlockDeviceKind;
+use amispec::{TemplateOf, TemplatedAmiSpec};
 use aws_sdk_ebs::Client as EbsClient;
-use aws_sdk_ec2::types::{
-    ArchitectureValues, BlockDeviceMapping, EbsBlockDevice, Filter, VolumeType,
-};
+use aws_sdk_ec2::types::Filter;
 use aws_sdk_ec2::{config::Region, Client as Ec2Client};
 use buildsys::manifest::{self, ImageFeature};
 use coldsnap::{SnapshotUploader, SnapshotWaiter};
 use log::{debug, info, warn};
+use serde::Serialize;
 use snafu::{ensure, OptionExt, ResultExt};
-use tokio::fs;
+use std::collections::HashMap;
 
 const ROOT_DEVICE_NAME: &str = "/dev/xvda";
 const DATA_DEVICE_NAME: &str = "/dev/xvdb";
-
-// Features we assume/enable for the images.
 const VIRT_TYPE: &str = "hvm";
-const VOLUME_TYPE: &str = "gp2";
-const SRIOV: &str = "simple";
-const ENA: bool = true;
+
+lazy_static::lazy_static! {
+    /// The default amispec template.
+    ///
+    /// pubsys modifies this structure based on attributes of the variant being registered:
+    /// * The data block device mapping is removed if no data device is present
+    /// * If the variant has Secure Boot enabled,
+    ///     * The boot-mode is set to uefi-preferred
+    ///     * uefi-data is added to the template
+    static ref DEFAULT_AMISPEC_TEMPLATE: toml::Table = toml::toml! {
+        name = "{{ ami.unique_name }}"
+        description = "{{ ami.description }}"
+        architecture = "{{ ami.arch }}"
+        root-device-name = "/dev/xvda"
+        sriov-net-support = "simple"
+        virtualization-type = VIRT_TYPE
+        ena-support = true
+
+        [block-device-mappings."/dev/xvda".ebs]
+        volume-type = "gp2"
+        volume-size = "{{ block_devices.root.volume_size }}"
+        snapshot-id = "{{ block_devices.root.snapshot_id }}"
+        delete-on-termination = true
+
+        [block-device-mappings."/dev/xvdb".ebs]
+        volume-type = "gp2"
+        volume-size = "{{ block_devices.data.volume_size }}"
+        snapshot-id = "{{ block_devices.data.snapshot_id }}"
+        delete-on-termination = true
+    };
+}
+
+// =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=  =^.^=
+// Define the structure of the template render context for amispec templates
+
+#[derive(Debug, Clone, Serialize)]
+struct AmispecRenderContext {
+    ami: AmiRenderContext,
+    block_devices: HashMap<String, BlockDeviceRenderContext>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AmiRenderContext {
+    unique_name: String,
+    arch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BlockDeviceRenderContext {
+    device_name: String,
+    snapshot_id: String,
+    volume_size: u64,
+}
 
 #[derive(Debug)]
 pub(crate) struct RegisteredIds {
@@ -45,15 +97,6 @@ async fn _register_image(
         .context(error::MissingImageLayoutSnafu {
             path: &ami_args.variant_manifest,
         })?;
-
-    let (os_volume_size, data_volume_size) = image_layout.publish_image_sizes_gib();
-
-    let uefi_data =
-        fs::read_to_string(&ami_args.uefi_data)
-            .await
-            .context(error::LoadUefiDataSnafu {
-                path: &ami_args.uefi_data,
-            })?;
 
     debug!("Uploading images into EBS snapshots in {}", region);
     let uploader = SnapshotUploader::new(ebs_client);
@@ -96,65 +139,125 @@ async fn _register_image(
             })?;
     }
 
-    // Prepare parameters for AMI registration request
-    let os_bdm = BlockDeviceMapping::builder()
-        .set_device_name(Some(ROOT_DEVICE_NAME.to_string()))
-        .set_ebs(Some(
-            EbsBlockDevice::builder()
-                .set_delete_on_termination(Some(true))
-                .set_snapshot_id(Some(os_snapshot.clone()))
-                .set_volume_type(Some(VolumeType::from(VOLUME_TYPE)))
-                .set_volume_size(Some(os_volume_size))
-                .build(),
-        ))
-        .build();
-
-    let mut data_bdm = None;
-    if let Some(ref data_snapshot) = data_snapshot {
-        let mut bdm = os_bdm.clone();
-        bdm.device_name = Some(DATA_DEVICE_NAME.to_string());
-        if let Some(ebs) = bdm.ebs.as_mut() {
-            ebs.snapshot_id = Some(data_snapshot.clone());
-            ebs.volume_size = Some(data_volume_size);
-        }
-        data_bdm = Some(bdm);
-    }
-
-    let mut block_device_mappings = vec![os_bdm];
-    if let Some(data_bdm) = data_bdm {
-        block_device_mappings.push(data_bdm);
-    }
-
     let uefi_secure_boot_enabled = variant_manifest
         .image_features()
         .iter()
         .flatten()
         .any(|f| *f == ImageFeature::UefiSecureBoot);
 
-    let (boot_mode, uefi_data) = if uefi_secure_boot_enabled {
-        (Some("uefi-preferred".into()), Some(uefi_data))
-    } else {
-        (None, None)
+    let (os_volume_size, data_volume_size) = image_layout.publish_image_sizes_gib();
+    let render_context = AmispecRenderContext {
+        ami: AmiRenderContext {
+            unique_name: ami_args.name.clone(),
+            arch: ami_args.arch.clone(),
+            description: ami_args.description.clone(),
+        },
+        block_devices: vec![
+            Some((
+                "root".into(),
+                BlockDeviceRenderContext {
+                    device_name: ROOT_DEVICE_NAME.into(),
+                    snapshot_id: os_snapshot.clone(),
+                    volume_size: os_volume_size as u64,
+                },
+            )),
+            // Only add the data snapshot if we've registered one
+            data_snapshot.as_ref().map(|snapshot| {
+                (
+                    "data".into(),
+                    BlockDeviceRenderContext {
+                        device_name: DATA_DEVICE_NAME.into(),
+                        snapshot_id: snapshot.clone(),
+                        volume_size: data_volume_size as u64,
+                    },
+                )
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
     };
 
+    let mut amispec_template_toml = DEFAULT_AMISPEC_TEMPLATE.clone();
+
+    // Remove the data volume if the variant doesn't have one defined
+    if data_snapshot.is_none() {
+        amispec_template_toml
+            .get_mut("block-device-mappings")
+            .and_then(|bdms| bdms.as_table_mut())
+            .and_then(|bdms| bdms.remove(DATA_DEVICE_NAME));
+    }
+
+    // Setup UEFI properties if secureboot is enabled
+    if uefi_secure_boot_enabled {
+        amispec_template_toml.insert("boot-mode".into(), "uefi-preferred".into());
+        amispec_template_toml.insert("uefi-data".into(), ami_args.uefi_data.as_str().into());
+    }
+
+    // Merge user-defined properties into the default template
+    if let Some(user_amispec_template) = &ami_args.amispec_file {
+        info!("Merging user-defined amispec template for AMI properties");
+        amispec_template_toml.merge(user_amispec_template);
+    } else {
+        info!("Using default amispec for AMI properties");
+    }
+
+    let amispec_template: TemplatedAmiSpec = amispec_template_toml
+        .try_into()
+        .context(error::ParseAmiSpecTemplateSnafu)?;
+    let mut amispec = amispec_template
+        .render(&render_context)
+        .context(error::RenderAmiSpecSnafu)?;
+
+    // Ensure the volume sizes aren't too small
+    let snapshot_sizes: HashMap<String, i32> = [
+        (Some(os_snapshot.clone()), os_volume_size),
+        (data_snapshot.clone(), data_volume_size),
+    ]
+    .into_iter()
+    .filter_map(|(snapshot, size)| snapshot.map(|snapshot| (snapshot, size)))
+    .collect();
+    if let Some(bdms) = amispec.block_device_mappings.as_mut() {
+        for (_, bdm) in bdms.iter_mut() {
+            if let Some(ebs_volume) = &mut bdm.ebs {
+                if let Some(hinted_volume_size) = ebs_volume
+                    .snapshot_id()
+                    .and_then(|snapshot_id| snapshot_sizes.get(snapshot_id))
+                    .copied()
+                {
+                    if let Some(curr_size) = ebs_volume.volume_size() {
+                        if hinted_volume_size as u64 > curr_size {
+                            warn!(
+                                "EBS volume '{ebs_volume:?}' was configured with size \
+                                    '{curr_size}', but size hints dictate that it should be \
+                                    larger. Using volume size '{hinted_volume_size}'"
+                            );
+                            ebs_volume
+                                .set_volume_size(Some(hinted_volume_size as u64))
+                                .context(error::InvalidEbsVolumeSizeSnafu)?;
+                        }
+                    } else {
+                        ebs_volume
+                            .set_volume_size(Some(hinted_volume_size as u64))
+                            .context(error::InvalidEbsVolumeSizeSnafu)?;
+                    }
+                }
+            }
+        }
+    }
+
+    debug!("Registering AMI with spec '{:?}'", amispec);
+
+    let register_image_call = amispec.as_register_image_call();
+
     info!("Making register image call in {}", region);
-    let register_response = ec2_client
-        .register_image()
-        .set_architecture(Some(ami_args.arch.clone()))
-        .set_block_device_mappings(Some(block_device_mappings))
-        .set_boot_mode(boot_mode)
-        .set_uefi_data(uefi_data)
-        .set_description(ami_args.description.clone())
-        .set_ena_support(Some(ENA))
-        .set_name(Some(ami_args.name.clone()))
-        .set_root_device_name(Some(ROOT_DEVICE_NAME.to_string()))
-        .set_sriov_net_support(Some(SRIOV.to_string()))
-        .set_virtualization_type(Some(VIRT_TYPE.to_string()))
-        .send()
-        .await
-        .context(error::RegisterImageSnafu {
-            region: region.as_ref(),
-        })?;
+    let register_response =
+        register_image_call
+            .send_with(ec2_client)
+            .await
+            .context(error::RegisterImageSnafu {
+                region: region.as_ref(),
+            })?;
 
     let image_id = register_response
         .image_id
@@ -213,7 +316,7 @@ pub(crate) async fn register_image(
 /// Queries EC2 for the given AMI name. If found, returns Ok(Some(id)), if not returns Ok(None).
 pub(crate) async fn get_ami_id<S>(
     name: S,
-    arch: &ArchitectureValues,
+    arch: impl Into<String>,
     region: &Region,
     ec2_client: &Ec2Client,
 ) -> Result<Option<String>>
@@ -230,7 +333,7 @@ where
                 .build(),
             Filter::builder()
                 .set_name(Some("architecture".to_string()))
-                .set_values(Some(vec![arch.as_ref().to_string()]))
+                .set_values(Some(vec![arch.into()]))
                 .build(),
             Filter::builder()
                 .set_name(Some("image-type".to_string()))
@@ -273,6 +376,7 @@ where
 
 mod error {
     use crate::aws::ami;
+    use amispec::ebs::InvalidValueError;
     use aws_sdk_ec2::error::SdkError;
     use aws_sdk_ec2::operation::{
         describe_images::DescribeImagesError, register_image::RegisterImageError,
@@ -289,16 +393,13 @@ mod error {
             source: SdkError<DescribeImagesError>,
         },
 
+        #[snafu(display("Attempted to configure EBS volume with invalid size: {}", source))]
+        InvalidEbsVolumeSize { source: InvalidValueError },
+
         #[snafu(display("Failed to load variant manifest from {}: {}", path.display(), source))]
         LoadVariantManifest {
             path: PathBuf,
             source: buildsys::manifest::Error,
-        },
-
-        #[snafu(display("Failed to load UEFI data from {}: {}", path.display(), source))]
-        LoadUefiData {
-            path: PathBuf,
-            source: std::io::Error,
         },
 
         #[snafu(display("Could not find image layout for {}", path.display()))]
@@ -310,11 +411,17 @@ mod error {
         #[snafu(display("DescribeImages with unique filters returned multiple results: {}", images.join(", ")))]
         MultipleImages { images: Vec<String> },
 
+        #[snafu(display("Failed to parse AMI spec template: {}", source))]
+        ParseAmiSpecTemplate { source: toml::de::Error },
+
         #[snafu(display("Failed to register image in {}: {}", region, source))]
         RegisterImage {
             region: String,
             source: SdkError<RegisterImageError>,
         },
+
+        #[snafu(display("Failed to render amispec for RegisterImages call: {}", source))]
+        RenderAmiSpec { source: amispec::TemplatedError },
 
         #[snafu(display("Failed to upload snapshot from {} in {}: {}", path.display(),region, source))]
         Snapshot {
